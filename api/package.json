@@ -1,0 +1,8 @@
+{
+  "name": "api-runtime",
+  "private": true,
+  "dependencies": {
+    "express": "^5.2.1",
+    "express-validator": "^7.2.1"
+  }
+}
