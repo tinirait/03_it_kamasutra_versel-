@@ -5,7 +5,9 @@ const { MongoClient, ObjectId } = require("mongodb");
 const app = express();
 app.use(express.json());
 
-const mongoURI = process.env.MONGO_URL || "mongodb://0.0.0.0:27017/project_1";
+const fallbackMongoURI =
+  "mongodb+srv://tinirait_db_user:FxhMOYau1YtxpzB9@cluster0.abcnv5v.mongodb.net/project_1?retryWrites=true&w=majority";
+const mongoURI = process.env.MONGO_URL || fallbackMongoURI;
 const client = new MongoClient(mongoURI);
 let collectionsPromise;
 
