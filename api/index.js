@@ -1,18 +1,46 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
+const { MongoClient, ObjectId } = require("mongodb");
 
 const app = express();
 app.use(express.json());
 
-const db = {
-  blogs: [],
-  posts: [],
+const mongoURI = process.env.MONGO_URL || "mongodb://0.0.0.0:27017/project_1";
+const client = new MongoClient(mongoURI);
+let collectionsPromise;
+
+const getCollections = async () => {
+  if (!collectionsPromise) {
+    collectionsPromise = client.connect().then(() => {
+      const db = client.db();
+      return {
+        blogs: db.collection("blogs"),
+        posts: db.collection("posts"),
+      };
+    });
+  }
+
+  return collectionsPromise;
 };
 
-let blogIdCounter = 1;
-let postIdCounter = 1;
-
 const createErrorsMessages = (errors) => ({ errorsMessages: errors });
+const mapBlog = (blog) => ({
+  id: String(blog._id),
+  name: blog.name,
+  description: blog.description,
+  websiteUrl: blog.websiteUrl,
+  createdAt: blog.createdAt,
+  isMembership: blog.isMembership,
+});
+const mapPost = (post) => ({
+  id: String(post._id),
+  title: post.title,
+  shortDescription: post.shortDescription,
+  content: post.content,
+  blogId: post.blogId,
+  blogName: post.blogName,
+  createdAt: post.createdAt,
+});
 
 const getBasicAuthCredentials = (authHeader) => {
   if (typeof authHeader !== "string" || !authHeader.startsWith("Basic ")) {
@@ -97,131 +125,250 @@ const postValidators = [
     .isString()
     .withMessage("Invalid blogId")
     .bail()
-    .custom((blogId) => db.blogs.some((blog) => blog.id === blogId))
+    .custom(async (blogId) => {
+      if (!ObjectId.isValid(blogId)) return false;
+      const { blogs } = await getCollections();
+      const foundBlog = await blogs.findOne({ _id: new ObjectId(blogId) });
+      return !!foundBlog;
+    })
     .withMessage("Invalid blogId"),
 ];
 
 const router = express.Router();
 
-router.get("/blogs", (req, res) => {
-  res.status(200).send(db.blogs);
-});
-
-router.post("/blogs", requireAdminAuth, blogValidators, handleValidationErrors, (req, res) => {
-  const blog = {
-    id: String(blogIdCounter++),
-    name: req.body.name.trim(),
-    description: req.body.description.trim(),
-    websiteUrl: req.body.websiteUrl.trim(),
-  };
-
-  db.blogs.push(blog);
-  res.status(201).send(blog);
-});
-
-router.get("/blogs/:id", (req, res) => {
-  const foundBlog = db.blogs.find((blog) => blog.id === req.params.id);
-  if (!foundBlog) {
-    res.sendStatus(404);
-    return;
+router.get("/blogs", async (req, res, next) => {
+  try {
+    const { blogs } = await getCollections();
+    const blogsList = await blogs.find({}).toArray();
+    res.status(200).send(blogsList.map(mapBlog));
+  } catch (error) {
+    next(error);
   }
-  res.status(200).send(foundBlog);
 });
 
-router.put("/blogs/:id", requireAdminAuth, blogValidators, handleValidationErrors, (req, res) => {
-  const foundBlog = db.blogs.find((blog) => blog.id === req.params.id);
-  if (!foundBlog) {
-    res.sendStatus(404);
-    return;
+router.post("/blogs", requireAdminAuth, blogValidators, handleValidationErrors, async (req, res, next) => {
+  try {
+    const { blogs } = await getCollections();
+    const newBlog = {
+      name: req.body.name.trim(),
+      description: req.body.description.trim(),
+      websiteUrl: req.body.websiteUrl.trim(),
+      createdAt: new Date().toISOString(),
+      isMembership: false,
+    };
+
+    const insertResult = await blogs.insertOne(newBlog);
+    const createdBlog = await blogs.findOne({ _id: insertResult.insertedId });
+    res.status(201).send(mapBlog(createdBlog));
+  } catch (error) {
+    next(error);
   }
-
-  foundBlog.name = req.body.name.trim();
-  foundBlog.description = req.body.description.trim();
-  foundBlog.websiteUrl = req.body.websiteUrl.trim();
-  res.sendStatus(204);
 });
 
-router.delete("/blogs/:id", requireAdminAuth, (req, res) => {
-  const blogIndex = db.blogs.findIndex((blog) => blog.id === req.params.id);
-  if (blogIndex === -1) {
-    res.sendStatus(404);
-    return;
+router.get("/blogs/:id", async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const { blogs } = await getCollections();
+    const foundBlog = await blogs.findOne({ _id: new ObjectId(req.params.id) });
+    if (!foundBlog) {
+      res.sendStatus(404);
+      return;
+    }
+    res.status(200).send(mapBlog(foundBlog));
+  } catch (error) {
+    next(error);
   }
-
-  db.blogs.splice(blogIndex, 1);
-  db.posts = db.posts.filter((post) => post.blogId !== req.params.id);
-  res.sendStatus(204);
 });
 
-router.get("/posts", (req, res) => {
-  res.status(200).send(db.posts);
-});
+router.put("/blogs/:id", requireAdminAuth, blogValidators, handleValidationErrors, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
 
-router.post("/posts", requireAdminAuth, postValidators, handleValidationErrors, (req, res) => {
-  const blog = db.blogs.find((item) => item.id === req.body.blogId);
-  const post = {
-    id: String(postIdCounter++),
-    title: req.body.title.trim(),
-    shortDescription: req.body.shortDescription.trim(),
-    content: req.body.content.trim(),
-    blogId: req.body.blogId,
-    blogName: blog.name,
-  };
+    const { blogs } = await getCollections();
+    const updateResult = await blogs.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: {
+          name: req.body.name.trim(),
+          description: req.body.description.trim(),
+          websiteUrl: req.body.websiteUrl.trim(),
+        },
+      },
+    );
 
-  db.posts.push(post);
-  res.status(201).send(post);
-});
+    if (!updateResult.matchedCount) {
+      res.sendStatus(404);
+      return;
+    }
 
-router.get("/posts/:id", (req, res) => {
-  const foundPost = db.posts.find((post) => post.id === req.params.id);
-  if (!foundPost) {
-    res.sendStatus(404);
-    return;
+    res.sendStatus(204);
+  } catch (error) {
+    next(error);
   }
-  res.status(200).send(foundPost);
 });
 
-router.put("/posts/:id", requireAdminAuth, postValidators, handleValidationErrors, (req, res) => {
-  const foundPost = db.posts.find((post) => post.id === req.params.id);
-  if (!foundPost) {
-    res.sendStatus(404);
-    return;
+router.delete("/blogs/:id", requireAdminAuth, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const { blogs, posts } = await getCollections();
+    const blogObjectId = new ObjectId(req.params.id);
+    const deleteResult = await blogs.deleteOne({ _id: blogObjectId });
+    if (!deleteResult.deletedCount) {
+      res.sendStatus(404);
+      return;
+    }
+
+    await posts.deleteMany({ blogId: req.params.id });
+    res.sendStatus(204);
+  } catch (error) {
+    next(error);
   }
-
-  const blog = db.blogs.find((item) => item.id === req.body.blogId);
-  foundPost.title = req.body.title.trim();
-  foundPost.shortDescription = req.body.shortDescription.trim();
-  foundPost.content = req.body.content.trim();
-  foundPost.blogId = req.body.blogId;
-  foundPost.blogName = blog.name;
-  res.sendStatus(204);
 });
 
-router.delete("/posts/:id", requireAdminAuth, (req, res) => {
-  const postIndex = db.posts.findIndex((post) => post.id === req.params.id);
-  if (postIndex === -1) {
-    res.sendStatus(404);
-    return;
+router.get("/posts", async (req, res, next) => {
+  try {
+    const { posts } = await getCollections();
+    const postsList = await posts.find({}).toArray();
+    res.status(200).send(postsList.map(mapPost));
+  } catch (error) {
+    next(error);
   }
-
-  db.posts.splice(postIndex, 1);
-  res.sendStatus(204);
 });
 
-router.delete("/testing/all-data", (req, res) => {
-  db.blogs = [];
-  db.posts = [];
-  blogIdCounter = 1;
-  postIdCounter = 1;
-  res.sendStatus(204);
+router.post("/posts", requireAdminAuth, postValidators, handleValidationErrors, async (req, res, next) => {
+  try {
+    const { blogs, posts } = await getCollections();
+    const blog = await blogs.findOne({ _id: new ObjectId(req.body.blogId) });
+    if (!blog) {
+      res.status(400).send(createErrorsMessages([{ message: "Invalid blogId", field: "blogId" }]));
+      return;
+    }
+
+    const newPost = {
+      title: req.body.title.trim(),
+      shortDescription: req.body.shortDescription.trim(),
+      content: req.body.content.trim(),
+      blogId: req.body.blogId,
+      blogName: blog.name,
+      createdAt: new Date().toISOString(),
+    };
+
+    const insertResult = await posts.insertOne(newPost);
+    const createdPost = await posts.findOne({ _id: insertResult.insertedId });
+    res.status(201).send(mapPost(createdPost));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/posts/:id", async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const { posts } = await getCollections();
+    const foundPost = await posts.findOne({ _id: new ObjectId(req.params.id) });
+    if (!foundPost) {
+      res.sendStatus(404);
+      return;
+    }
+    res.status(200).send(mapPost(foundPost));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/posts/:id", requireAdminAuth, postValidators, handleValidationErrors, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const { blogs, posts } = await getCollections();
+    const blog = await blogs.findOne({ _id: new ObjectId(req.body.blogId) });
+    if (!blog) {
+      res.status(400).send(createErrorsMessages([{ message: "Invalid blogId", field: "blogId" }]));
+      return;
+    }
+    const updateResult = await posts.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: {
+          title: req.body.title.trim(),
+          shortDescription: req.body.shortDescription.trim(),
+          content: req.body.content.trim(),
+          blogId: req.body.blogId,
+          blogName: blog.name,
+        },
+      },
+    );
+
+    if (!updateResult.matchedCount) {
+      res.sendStatus(404);
+      return;
+    }
+
+    res.sendStatus(204);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/posts/:id", requireAdminAuth, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const { posts } = await getCollections();
+    const deleteResult = await posts.deleteOne({ _id: new ObjectId(req.params.id) });
+    if (!deleteResult.deletedCount) {
+      res.sendStatus(404);
+      return;
+    }
+
+    res.sendStatus(204);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/testing/all-data", async (req, res, next) => {
+  try {
+    const { blogs, posts } = await getCollections();
+    await Promise.all([blogs.deleteMany({}), posts.deleteMany({})]);
+    res.sendStatus(204);
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/", (req, res) => {
   res.status(200).send("Hello world!");
 });
 
-app.use("", router);
-app.use("/ht_02/api", router);
+app.use("/hometask_03/api", router);
 app.use("/api/index.js", router);
+app.use("", router);
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.sendStatus(500);
+});
 
 module.exports = app;

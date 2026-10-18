@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "express": "^5.2.1",
-    "express-validator": "^7.2.1"
+    "express-validator": "^7.2.1",
+    "mongodb": "^6.19.0"
   },
   "devDependencies": {
     "dotenv": "^18.0.8",
