@@ -8,6 +8,7 @@ app.use(express.json());
 const fallbackMongoURI =
   "mongodb+srv://tinirait_db_user:FxhMOYau1YtxpzB9@cluster0.abcnv5v.mongodb.net/project_1?retryWrites=true&w=majority";
 const mongoURI = process.env.MONGO_URL || fallbackMongoURI;
+const useMongo = process.env.USE_MONGO === "true";
 const client = new MongoClient(mongoURI, {
   serverSelectionTimeoutMS: 2000,
   connectTimeoutMS: 2000,
@@ -78,6 +79,10 @@ const memoryCollections = {
 };
 
 const getCollections = async () => {
+  if (!useMongo) {
+    return memoryCollections;
+  }
+
   if (shouldUseMemoryStore) {
     return memoryCollections;
   }
