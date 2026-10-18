@@ -1,9 +1,5 @@
 {
   "version": 2,
-  "env": {
-    "MONGO_URL": "mongodb+srv://tinirait_db_user:FxhMOYau1YtxpzB9@cluster0.abcnv5v.mongodb.net/project_1?retryWrites=true&w=majority",
-    "SECRET_KEY": "YOURSECRETKEYGOESHERE"
-  },
   "builds": [{ "src": "api/index.js", "use": "@vercel/node" }],
   "routes": [{ "src": "/(.*)", "dest": "api/index.js" }]
 }

@@ -1,121 +1,29 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
-const { randomBytes } = require("crypto");
+const { MongoClient, ObjectId } = require("mongodb");
 
 const app = express();
 app.use(express.json());
 
-const useMongo = process.env.USE_MONGO === "true";
-const fallbackMongoURI =
-  "mongodb+srv://tinirait_db_user:FxhMOYau1YtxpzB9@cluster0.abcnv5v.mongodb.net/project_1?retryWrites=true&w=majority";
-const mongoURI = process.env.MONGO_URL || fallbackMongoURI;
-let MongoClient;
-let ObjectId;
-if (useMongo) {
-  ({ MongoClient, ObjectId } = require("mongodb"));
-}
-const client = useMongo
-  ? new MongoClient(mongoURI, {
-      serverSelectionTimeoutMS: 2000,
-      connectTimeoutMS: 2000,
-    })
-  : null;
+const mongoURI = process.env.MONGO_URL || "mongodb://0.0.0.0:27017/project_1";
+const client = new MongoClient(mongoURI);
 let collectionsPromise;
-let shouldUseMemoryStore = false;
-
-const memoryDb = {
-  blogs: [],
-  posts: [],
-};
-
-const objectIdRegex = /^[a-f\d]{24}$/i;
-const createId = () => (useMongo ? new ObjectId() : randomBytes(12).toString("hex"));
-const isValidId = (value) => (useMongo ? ObjectId.isValid(value) : objectIdRegex.test(value));
-const toStorageId = (value) => (useMongo ? new ObjectId(value) : value);
-
-const matchesQuery = (doc, query) =>
-  Object.entries(query).every(([key, value]) => {
-    return doc[key] === value;
-  });
-
-const createMemoryCollection = (collectionName) => ({
-  find(query = {}) {
-    return {
-      async toArray() {
-        return memoryDb[collectionName].filter((doc) => matchesQuery(doc, query));
-      },
-    };
-  },
-  async findOne(query) {
-    return memoryDb[collectionName].find((doc) => matchesQuery(doc, query)) || null;
-  },
-  async insertOne(doc) {
-    const insertedId = createId();
-    memoryDb[collectionName].push({ _id: insertedId, ...doc });
-    return { insertedId };
-  },
-  async updateOne(filter, update) {
-    const index = memoryDb[collectionName].findIndex((doc) => matchesQuery(doc, filter));
-    if (index === -1) {
-      return { matchedCount: 0 };
-    }
-    memoryDb[collectionName][index] = {
-      ...memoryDb[collectionName][index],
-      ...(update.$set || {}),
-    };
-    return { matchedCount: 1 };
-  },
-  async deleteOne(filter) {
-    const initialLength = memoryDb[collectionName].length;
-    memoryDb[collectionName] = memoryDb[collectionName].filter((doc) => !matchesQuery(doc, filter));
-    return { deletedCount: initialLength - memoryDb[collectionName].length };
-  },
-  async deleteMany(filter) {
-    if (!filter || Object.keys(filter).length === 0) {
-      const deletedCount = memoryDb[collectionName].length;
-      memoryDb[collectionName] = [];
-      return { deletedCount };
-    }
-    const initialLength = memoryDb[collectionName].length;
-    memoryDb[collectionName] = memoryDb[collectionName].filter((doc) => !matchesQuery(doc, filter));
-    return { deletedCount: initialLength - memoryDb[collectionName].length };
-  },
-});
-
-const memoryCollections = {
-  blogs: createMemoryCollection("blogs"),
-  posts: createMemoryCollection("posts"),
-};
 
 const getCollections = async () => {
-  if (!useMongo) {
-    return memoryCollections;
-  }
-
-  if (shouldUseMemoryStore) {
-    return memoryCollections;
-  }
-
   if (!collectionsPromise) {
-    collectionsPromise = client
-      .connect()
-      .then(() => {
-        const db = client.db();
-        return {
-          blogs: db.collection("blogs"),
-          posts: db.collection("posts"),
-        };
-      })
-      .catch((error) => {
-        // Keep API responsive in serverless even when Mongo is temporarily unavailable.
-        console.error("Mongo connection failed, fallback to memory store:", error.message);
-        shouldUseMemoryStore = true;
-        return memoryCollections;
-      });
+    collectionsPromise = client.connect().then(() => {
+      const db = client.db();
+      return {
+        blogs: db.collection("blogs"),
+        posts: db.collection("posts"),
+      };
+    });
   }
 
   return collectionsPromise;
 };
+const isValidId = (value) => ObjectId.isValid(value);
+const toStorageId = (value) => new ObjectId(value);
 
 const createErrorsMessages = (errors) => ({ errorsMessages: errors });
 const mapBlog = (blog) => ({
