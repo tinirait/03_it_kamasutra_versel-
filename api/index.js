@@ -1,18 +1,25 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
-const { MongoClient, ObjectId } = require("mongodb");
+const { randomBytes } = require("crypto");
 
 const app = express();
 app.use(express.json());
 
+const useMongo = process.env.USE_MONGO === "true";
 const fallbackMongoURI =
   "mongodb+srv://tinirait_db_user:FxhMOYau1YtxpzB9@cluster0.abcnv5v.mongodb.net/project_1?retryWrites=true&w=majority";
 const mongoURI = process.env.MONGO_URL || fallbackMongoURI;
-const useMongo = process.env.USE_MONGO === "true";
-const client = new MongoClient(mongoURI, {
-  serverSelectionTimeoutMS: 2000,
-  connectTimeoutMS: 2000,
-});
+let MongoClient;
+let ObjectId;
+if (useMongo) {
+  ({ MongoClient, ObjectId } = require("mongodb"));
+}
+const client = useMongo
+  ? new MongoClient(mongoURI, {
+      serverSelectionTimeoutMS: 2000,
+      connectTimeoutMS: 2000,
+    })
+  : null;
 let collectionsPromise;
 let shouldUseMemoryStore = false;
 
@@ -21,11 +28,13 @@ const memoryDb = {
   posts: [],
 };
 
+const objectIdRegex = /^[a-f\d]{24}$/i;
+const createId = () => (useMongo ? new ObjectId() : randomBytes(12).toString("hex"));
+const isValidId = (value) => (useMongo ? ObjectId.isValid(value) : objectIdRegex.test(value));
+const toStorageId = (value) => (useMongo ? new ObjectId(value) : value);
+
 const matchesQuery = (doc, query) =>
   Object.entries(query).every(([key, value]) => {
-    if (value instanceof ObjectId) {
-      return String(doc[key]) === String(value);
-    }
     return doc[key] === value;
   });
 
@@ -41,7 +50,7 @@ const createMemoryCollection = (collectionName) => ({
     return memoryDb[collectionName].find((doc) => matchesQuery(doc, query)) || null;
   },
   async insertOne(doc) {
-    const insertedId = new ObjectId();
+    const insertedId = createId();
     memoryDb[collectionName].push({ _id: insertedId, ...doc });
     return { insertedId };
   },
@@ -211,9 +220,9 @@ const postValidators = [
     .withMessage("Invalid blogId")
     .bail()
     .custom(async (blogId) => {
-      if (!ObjectId.isValid(blogId)) return false;
+      if (!isValidId(blogId)) return false;
       const { blogs } = await getCollections();
-      const foundBlog = await blogs.findOne({ _id: new ObjectId(blogId) });
+      const foundBlog = await blogs.findOne({ _id: toStorageId(blogId) });
       return !!foundBlog;
     })
     .withMessage("Invalid blogId"),
@@ -252,13 +261,13 @@ router.post("/blogs", requireAdminAuth, blogValidators, handleValidationErrors, 
 
 router.get("/blogs/:id", async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { blogs } = await getCollections();
-    const foundBlog = await blogs.findOne({ _id: new ObjectId(req.params.id) });
+    const foundBlog = await blogs.findOne({ _id: toStorageId(req.params.id) });
     if (!foundBlog) {
       res.sendStatus(404);
       return;
@@ -271,14 +280,14 @@ router.get("/blogs/:id", async (req, res, next) => {
 
 router.put("/blogs/:id", requireAdminAuth, blogValidators, handleValidationErrors, async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { blogs } = await getCollections();
     const updateResult = await blogs.updateOne(
-      { _id: new ObjectId(req.params.id) },
+      { _id: toStorageId(req.params.id) },
       {
         $set: {
           name: req.body.name.trim(),
@@ -301,13 +310,13 @@ router.put("/blogs/:id", requireAdminAuth, blogValidators, handleValidationError
 
 router.delete("/blogs/:id", requireAdminAuth, async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { blogs, posts } = await getCollections();
-    const blogObjectId = new ObjectId(req.params.id);
+    const blogObjectId = toStorageId(req.params.id);
     const deleteResult = await blogs.deleteOne({ _id: blogObjectId });
     if (!deleteResult.deletedCount) {
       res.sendStatus(404);
@@ -334,7 +343,7 @@ router.get("/posts", async (req, res, next) => {
 router.post("/posts", requireAdminAuth, postValidators, handleValidationErrors, async (req, res, next) => {
   try {
     const { blogs, posts } = await getCollections();
-    const blog = await blogs.findOne({ _id: new ObjectId(req.body.blogId) });
+    const blog = await blogs.findOne({ _id: toStorageId(req.body.blogId) });
     if (!blog) {
       res.status(400).send(createErrorsMessages([{ message: "Invalid blogId", field: "blogId" }]));
       return;
@@ -359,13 +368,13 @@ router.post("/posts", requireAdminAuth, postValidators, handleValidationErrors, 
 
 router.get("/posts/:id", async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { posts } = await getCollections();
-    const foundPost = await posts.findOne({ _id: new ObjectId(req.params.id) });
+    const foundPost = await posts.findOne({ _id: toStorageId(req.params.id) });
     if (!foundPost) {
       res.sendStatus(404);
       return;
@@ -378,19 +387,19 @@ router.get("/posts/:id", async (req, res, next) => {
 
 router.put("/posts/:id", requireAdminAuth, postValidators, handleValidationErrors, async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { blogs, posts } = await getCollections();
-    const blog = await blogs.findOne({ _id: new ObjectId(req.body.blogId) });
+    const blog = await blogs.findOne({ _id: toStorageId(req.body.blogId) });
     if (!blog) {
       res.status(400).send(createErrorsMessages([{ message: "Invalid blogId", field: "blogId" }]));
       return;
     }
     const updateResult = await posts.updateOne(
-      { _id: new ObjectId(req.params.id) },
+      { _id: toStorageId(req.params.id) },
       {
         $set: {
           title: req.body.title.trim(),
@@ -415,13 +424,13 @@ router.put("/posts/:id", requireAdminAuth, postValidators, handleValidationError
 
 router.delete("/posts/:id", requireAdminAuth, async (req, res, next) => {
   try {
-    if (!ObjectId.isValid(req.params.id)) {
+    if (!isValidId(req.params.id)) {
       res.sendStatus(404);
       return;
     }
 
     const { posts } = await getCollections();
-    const deleteResult = await posts.deleteOne({ _id: new ObjectId(req.params.id) });
+    const deleteResult = await posts.deleteOne({ _id: toStorageId(req.params.id) });
     if (!deleteResult.deletedCount) {
       res.sendStatus(404);
       return;
